@@ -55,7 +55,8 @@ when that folder exists, otherwise to a `downloads` folder.
 ## Quitting
 
 The app runs quietly with no Dock icon. To stop it: Activity Monitor, search
-`scdl_web`, Quit. Leaving it running is harmless.
+`Python`, select the one whose path ends in `SoundCloud Downloader/venv/bin/python`,
+and Quit it. Leaving it running is harmless.
 
 ## If something breaks
 

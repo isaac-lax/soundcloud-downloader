@@ -61,12 +61,13 @@ class Job:
             time.sleep(0.4)                       # let the HTTP reply go out
             boot = os.environ.get("SCDL_BOOTSTRAP")
             if boot and Path(boot).exists():
-                cmd = ["bash", boot]
+                relaunch = f'bash "{boot}"'
             elif sys.platform == "darwin":
-                cmd = ["open", "-a", "SoundCloud Downloader"]
+                relaunch = 'open -a "SoundCloud Downloader"'
             else:
-                cmd = ["bash", str(HERE / "launch.sh"), "--no-browser"]
-            subprocess.Popen(cmd, start_new_session=True,
+                relaunch = f'bash "{HERE / "launch.sh"}" --no-browser'
+            # Relaunch after a short delay so this server is already gone when the launcher checks.
+            subprocess.Popen(["bash", "-c", f"sleep 2; {relaunch}"], start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.3)
             os._exit(0)

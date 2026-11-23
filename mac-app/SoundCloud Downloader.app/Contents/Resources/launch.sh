@@ -61,4 +61,9 @@ fi
 notify "Starting… your browser will open in a moment."
 cd "$APP_DIR"
 export SCDL_VERSION="$APP_VERSION"
-exec "$VENV/bin/python" scdl_web.py "$@"
+# Start the server as its own background process and exit, so macOS does not treat the
+# server as "the app". That keeps double-clicking the app (and Update & restart) working.
+nohup "$VENV/bin/python" scdl_web.py "$@" >>"$HOME_DIR/server.log" 2>&1 < /dev/null &
+disown 2>/dev/null || true
+echo "server started (pid $!)"
+exit 0
