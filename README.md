@@ -36,8 +36,11 @@ Macs that have never had Python. Alternatively install Python from python.org fi
    it fetches the latest version, restarts, and reloads the page by itself. The
    page says when a newer version is available.
 2. Paste one or more SoundCloud links (tracks, sets, or profiles), one per line.
-3. Click **Download**. Progress shows on the page, finished tracks are listed
-   under "Added", and Apple Music imports them within a few seconds.
+3. Click **Download**. Links are resolved into a list of tracks (a set or profile
+   becomes one row per track), each with its own progress bar through download,
+   silence check, loudness, and export. With several tracks an overall bar shows
+   how far the batch is. A bad link fails on its own row without stopping the rest.
+   Apple Music imports each track within a few seconds of it finishing.
 
 Options on the page:
 - **Trim silence at start/end**: removes dead space longer than 3 seconds at the

@@ -34,7 +34,8 @@ class Job:
         self.lock = threading.Lock()
         self.running = False
         self.log: list[str] = []
-        self.done: list[str] = []
+        self.items: list[dict] = []      # one per track: title, artist, stage, pct, file, error
+        self.resolving = False
         self.failed = 0
         self.outdir = scdl.default_outdir()
         self.latest = None          # newest version on GitHub, if we could check
@@ -102,9 +103,6 @@ class Job:
                 self.log[-1] = line
             else:
                 self.log.append(line)
-            if line.startswith("[MoveFiles] Moving file"):
-                name = line.rsplit(" to \"", 1)[-1].rstrip("\"")
-                self.done.append(Path(name).name)
 
     def progress(self, d):
         if d["status"] == "downloading":
@@ -112,36 +110,61 @@ class Job:
         elif d["status"] == "finished":
             self.add("[download] downloaded")
 
+    def on_event(self, kind, i, **d):
+        with self.lock:
+            if kind == "queue":
+                self.resolving = False
+                self.items = [{"title": t["title"], "artist": t.get("artist", ""), "stage": "Queued",
+                               "pct": 0, "file": None, "error": None} for t in d["tracks"]]
+                return
+            it = self.items[i]
+            if kind == "start":
+                it.update(stage="Starting", pct=2)
+            elif kind == "progress":
+                it.update(stage=d["stage"], pct=max(it["pct"], round(d["pct"])))
+                for k in ("file", "title", "artist"):
+                    if d.get(k):
+                        it[k] = d[k]
+            elif kind == "done":
+                it.update(stage="Added to Apple Music" if self.outdir == scdl.APPLE_MUSIC_DROP else "Done", pct=100)
+            elif kind == "failed":
+                it.update(stage="Failed", error=d["error"], pct=100)
+
     def start(self, urls, lufs, normalize, trim):
         with self.lock:
             if self.running:
                 return False
             self.running = True
-            self.log, self.done, self.failed = [], [], 0
+            self.resolving = True
+            self.log, self.items, self.failed = [], [], 0
         threading.Thread(target=self._run, args=(urls, lufs, normalize, trim), daemon=True).start()
         return True
 
     def _run(self, urls, lufs, normalize, trim):
         try:
             self.add(f"Saving to {self.outdir}")
+            self.add("Looking up tracks…")
             scdl.run_download(urls, self.outdir, lufs, normalize,
-                              progress_hook=self.progress, logger=self, trim=trim)
-            if self.failed:
-                self.add(f"Finished with {self.failed} error(s). Nothing was added for the failed link(s).")
-            elif not self.done:
-                self.add("Finished, but no files were produced.")
+                              progress_hook=self.progress, logger=self, trim=trim, on_event=self.on_event)
+            n_ok = sum(1 for it in self.items if it["error"] is None)
+            n_bad = sum(1 for it in self.items if it["error"] is not None)
+            if n_bad:
+                self.add(f"Finished: {n_ok} added, {n_bad} failed.")
+            elif not self.items:
+                self.add("Finished, but no tracks were found at that link.")
             else:
                 self.add("Done.")
         except Exception as e:  # noqa: BLE001
             self.add(f"Error: {e}")
-            self.failed += 1
         finally:
             self.running = False
+            self.resolving = False
 
     def status(self):
         with self.lock:
-            return {"running": self.running, "log": self.log[-200:], "done": self.done,
-                    "failed": self.failed, "outdir": str(self.outdir),
+            done = sum(1 for it in self.items if it["pct"] >= 100)
+            return {"running": self.running, "resolving": self.resolving, "log": self.log[-200:],
+                    "items": self.items, "done_count": done, "outdir": str(self.outdir),
                     "apple_music": self.outdir == scdl.APPLE_MUSIC_DROP,
                     "version": VERSION, "certifi": scdl.CERTIFI,
                     "latest": self.latest, "restarting": self.restarting}

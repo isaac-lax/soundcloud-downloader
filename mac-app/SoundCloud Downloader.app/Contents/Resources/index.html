@@ -22,8 +22,21 @@
   .dest { font-size:13px; color:var(--muted); margin-top:12px; word-break:break-all; }
   .dest b { color:var(--ok); font-weight:600; }
   pre { margin:0; max-height:280px; overflow:auto; font:13px/1.5 ui-monospace, Menlo, monospace; white-space:pre-wrap; word-break:break-all; color:var(--muted); }
-  ul { margin:0; padding-left:20px; }
-  li { color:var(--ok); }
+  .track { display:grid; grid-template-columns:1fr auto; gap:4px 12px; padding:10px 0; border-top:1px solid var(--line); }
+  .track:first-of-type { border-top:0; padding-top:0; }
+  .track .t { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .track .a { color:var(--muted); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .track .s { font-size:13px; color:var(--muted); text-align:right; white-space:nowrap; }
+  .track .s.ok { color:var(--ok); } .track .s.bad { color:var(--err); }
+  .bar2 { grid-column:1 / -1; height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .bar2 i { display:block; height:100%; background:var(--accent); border-radius:3px; transition:width .4s; }
+  .bar2 i.ok { background:var(--ok); } .bar2 i.bad { background:var(--err); }
+  .overall { margin-bottom:14px; }
+  .overall .h { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin-bottom:6px; }
+  .overall .bar2 { height:10px; border-radius:5px; }
+  .track .e { grid-column:1 / -1; font-size:12px; color:var(--err); white-space:pre-wrap; }
+  details summary { cursor:pointer; font-size:13px; color:var(--muted); }
+  details pre { margin-top:10px; }
   .err { color:var(--err); font-size:14px; margin-top:10px; }
   h2 { font-size:15px; margin:0 0 10px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
   .note { font-size:12px; color:var(--muted); text-align:center; }
@@ -51,14 +64,16 @@
     <div class="err" id="err"></div>
   </div>
 
-  <div class="card" id="donecard" hidden>
-    <h2>Added</h2>
-    <ul id="done"></ul>
+  <div class="card" id="tracks" hidden>
+    <div class="overall" id="overall" hidden>
+      <div class="h"><span id="ovtext"></span><span id="ovpct"></span></div>
+      <div class="bar2"><i id="ovbar" style="width:0%"></i></div>
+    </div>
+    <div id="list"></div>
   </div>
 
   <div class="card">
-    <h2>Progress</h2>
-    <pre id="log">Idle.</pre>
+    <details id="logbox"><summary>Details</summary><pre id="log">Idle.</pre></details>
   </div>
   <div class="card bar">
     <span id="ver"></span>
@@ -84,9 +99,8 @@ async function refresh() {
   $('go').disabled = s.running;
   $('go').textContent = s.running ? 'Working…' : 'Download';
   $('log').textContent = s.log.length ? s.log.join('\n') : 'Idle.';
-  $('log').scrollTop = $('log').scrollHeight;
-  $('donecard').hidden = !s.done.length;
-  $('done').innerHTML = s.done.map(n => `<li>${n.replace(/</g,'&lt;')}</li>`).join('');
+  if ($('logbox').open) $('log').scrollTop = $('log').scrollHeight;
+  renderTracks(s);
   $('ver').textContent = 'Version ' + s.version + (s.certifi ? '' : ' (no certifi)');
   const newer = s.latest && s.latest !== s.version;
   $('upd').textContent = newer ? 'Version ' + s.latest + ' is available' : (s.latest ? 'Up to date' : '');
@@ -96,6 +110,36 @@ async function refresh() {
   $('dest').innerHTML = s.apple_music
     ? '<b>Saving into Apple Music</b> (Automatically Add to Music folder)'
     : 'Saving to ' + s.outdir;
+}
+const esc = t => String(t ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function renderTracks(s) {
+  const items = s.items || [];
+  $('tracks').hidden = !(items.length || s.resolving);
+  if (s.resolving && !items.length) {
+    $('overall').hidden = true;
+    $('list').innerHTML = '<div class="track"><div class="t">Looking up tracks…</div><div class="s"></div><div class="bar2"><i style="width:3%"></i></div></div>';
+    return;
+  }
+  const n = items.length, done = s.done_count || 0;
+  $('overall').hidden = n < 2;
+  if (n >= 2) {
+    const sum = items.reduce((a, it) => a + Math.min(it.pct, 100), 0) / n;
+    const bad = items.filter(it => it.error).length, ok = items.filter(it => it.pct >= 100 && !it.error).length;
+    $('ovtext').textContent = s.running ? `Track ${Math.min(done + 1, n)} of ${n}` : `${n} tracks`;
+    $('ovpct').textContent = s.running ? `${done} of ${n} finished` : `${ok} added` + (bad ? `, ${bad} failed` : '');
+    $('ovbar').style.width = sum + '%';
+    $('ovbar').className = done === n ? (bad ? 'bad' : 'ok') : '';
+  }
+  $('list').innerHTML = items.map(it => {
+    const cls = it.error ? 'bad' : (it.pct >= 100 ? 'ok' : '');
+    const stage = it.error ? 'Failed' : (it.pct > 0 && it.pct < 100 ? `${it.stage} · ${it.pct}%` : it.stage);
+    return `<div class="track">
+      <div><div class="t">${esc(it.title)}</div><div class="a">${esc(it.artist)}</div></div>
+      <div class="s ${cls}">${esc(stage)}</div>
+      <div class="bar2"><i class="${cls}" style="width:${it.pct}%"></i></div>
+      ${it.error ? `<div class="e">${esc(it.error)}</div>` : ''}
+    </div>`;
+  }).join('');
 }
 $('go').onclick = async () => {
   $('err').textContent = '';

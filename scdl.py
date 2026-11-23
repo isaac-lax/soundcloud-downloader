@@ -141,11 +141,12 @@ def export_mp3(src: Path, dst: Path, gain_db: float, tags: dict, cover: Path | N
 class NormalizeAndExport(PostProcessor):
     """Runs once per downloaded track, after yt-dlp has embedded tags and artwork."""
 
-    def __init__(self, target_lufs, normalize, trim=True):
+    def __init__(self, target_lufs, normalize, trim=True, stage_cb=None):
         super().__init__()
         self.target = target_lufs
         self.normalize = normalize
         self.trim = trim
+        self.stage_cb = stage_cb or (lambda *a, **k: None)
 
     def run(self, info):
         src = Path(info["filepath"])
@@ -153,6 +154,7 @@ class NormalizeAndExport(PostProcessor):
 
         pre = ""
         if self.trim:
+            self.stage_cb("Checking for silence", 72)
             ks, ke, dur = detect_silence(src)
             pre = trim_filter(ks, ke, dur)
             if pre:
@@ -168,6 +170,7 @@ class NormalizeAndExport(PostProcessor):
 
         gain = 0.0
         if self.normalize:
+            self.stage_cb("Measuring loudness", 78)
             measured = measure_lufs(src, pre)
             gain = self.target - measured
             self.to_screen(f"Loudness {measured:.1f} LUFS -> {self.target} LUFS (gain {gain:+.1f} dB)")
@@ -184,7 +187,9 @@ class NormalizeAndExport(PostProcessor):
                       if t.get("filepath") and Path(t["filepath"]).exists()), None)
 
         self.to_screen(f"Exporting MP3 320 kbps / 44.1 kHz / stereo: {dst.name}")
+        self.stage_cb("Exporting MP3", 88, file=dst.name, title=tags["title"], artist=tags["artist"])
         export_mp3(src, dst, gain, tags, cover, pre)
+        self.stage_cb("Saving", 98)
         src.unlink()                      # remove the intermediate download
         if cover:
             cover.unlink()
@@ -227,21 +232,113 @@ def default_outdir() -> Path:
     return APPLE_MUSIC_DROP if APPLE_MUSIC_DROP.is_dir() else Path("downloads").resolve()
 
 
+def expand_urls(urls, logger=None, _depth=0):
+    """Resolve track / set / profile URLs into a flat list of tracks: [{url, title, artist}]."""
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "ffmpeg_location": FFMPEG,
+            **({"logger": logger} if logger else {})}
+    tracks = []
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        for url in urls:
+            try:
+                info = ydl.extract_info(url, download=False)
+            except yt_dlp.utils.DownloadError as e:
+                tracks.append({"url": url, "title": url, "artist": "", "error": friendly_error(str(e).split("ERROR: ")[-1])})
+                continue
+            if info.get("_type") == "playlist":
+                for e in info.get("entries") or []:
+                    if e is None:
+                        continue
+                    sub = e.get("url") or e.get("webpage_url")
+                    if e.get("_type") in ("playlist", "url") and "/sets/" in (sub or "") and _depth < 2:
+                        tracks += expand_urls([sub], logger, _depth + 1)     # a set inside a profile
+                    else:
+                        tracks.append({"url": sub, "title": e.get("title") or sub,
+                                       "artist": e.get("uploader") or e.get("artist") or ""})
+            else:
+                tracks.append({"url": info.get("webpage_url") or url, "title": info.get("title") or url,
+                               "artist": info.get("uploader") or info.get("artist") or ""})
+    return tracks
+
+
+def friendly_error(msg: str) -> str:
+    """Turn yt-dlp's error text into something a person can act on."""
+    msg = re.sub(r"^\[[^\]]+\]\s*[^:]*:\s*", "", msg.strip())        # drop "[soundcloud] id: "
+    msg = re.sub(r"\s*\(caused by .*\)$", "", msg)
+    if "404" in msg:
+        return "Not found. The link may be wrong, private, or the track was removed."
+    if "403" in msg or "401" in msg:
+        return "SoundCloud refused access to this track (it may be private or region-locked)."
+    if "CERTIFICATE_VERIFY_FAILED" in msg:
+        return "Secure connection failed (certificate problem). Try Update & restart."
+    if "Unable to download webpage" in msg or "getaddrinfo" in msg or "Connection" in msg:
+        return "Could not reach SoundCloud. Check your internet connection and try again."
+    return msg
+
+
+def _download_pct(d: dict) -> float | None:
+    """0..1 fraction of the download finished, from a yt-dlp progress dict."""
+    total = d.get("total_bytes") or d.get("total_bytes_estimate")
+    if total and d.get("downloaded_bytes") is not None:
+        return min(1.0, d["downloaded_bytes"] / total)
+    if d.get("fragment_count") and d.get("fragment_index") is not None:
+        return min(1.0, d["fragment_index"] / d["fragment_count"])
+    return None
+
+
 def run_download(urls, outdir: Path, lufs: float = -14.5, normalize: bool = True,
-                 progress_hook=progress, logger=None, trim: bool = True) -> int:
-    """Download, normalize and export every URL. Returns the number of failures."""
+                 progress_hook=progress, logger=None, trim: bool = True, on_event=None) -> int:
+    """Download, trim, normalize and export every track behind the URLs. Returns the number of failures.
+
+    on_event(kind, index, **data) is called with kind in:
+      "queue"  (tracks=[...])            once, after the URLs are resolved
+      "start"  / "progress" (pct, stage) / "done" (file) / "failed" (error)   per track
+    """
+    emit = on_event or (lambda *a, **k: None)
     outdir.mkdir(parents=True, exist_ok=True)
     workdir = Path(tempfile.mkdtemp(prefix="scdl-"))
+
+    tracks = expand_urls(urls, logger)
+    emit("queue", None, tracks=tracks)
     failures = 0
     try:
-        with yt_dlp.YoutubeDL(build_options(outdir, workdir, progress_hook, logger)) as ydl:
-            ydl.add_post_processor(NormalizeAndExport(lufs, normalize, trim), when="post_process")
-            for url in urls:
-                try:
-                    ydl.download([url])
-                except yt_dlp.utils.DownloadError as e:
-                    failures += 1
-                    print(f"\nFailed: {url}\n  {e}", file=sys.stderr)
+        for i, t in enumerate(tracks):
+            if t.get("error"):
+                failures += 1
+                emit("failed", i, error=t["error"])
+                continue
+            emit("start", i)
+            if len(tracks) > 1:
+                print(f"\n[{i + 1}/{len(tracks)}] {t['title']}")
+
+            def hook(d, i=i):
+                progress_hook(d)
+                if d["status"] == "downloading":
+                    f = _download_pct(d)
+                    if f is not None:
+                        emit("progress", i, pct=5 + 65 * f, stage="Downloading")
+                elif d["status"] == "finished":
+                    emit("progress", i, pct=70, stage="Downloaded")
+
+            def stage(name, pct, i=i, **data):
+                emit("progress", i, pct=pct, stage=name, **data)
+
+            opts = build_options(outdir, workdir, hook, logger)
+            opts["ignoreerrors"] = False
+            opts["noplaylist"] = True
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.add_post_processor(NormalizeAndExport(lufs, normalize, trim, stage), when="post_process")
+                    ydl.download([t["url"]])
+                emit("done", i)
+            except yt_dlp.utils.DownloadError as e:
+                failures += 1
+                msg = friendly_error(str(e).split("ERROR: ")[-1])
+                print(f"\nFailed: {t['url']}\n  {msg}", file=sys.stderr)
+                emit("failed", i, error=msg)
+            except Exception as e:  # noqa: BLE001  ffmpeg or filesystem trouble
+                failures += 1
+                print(f"\nFailed: {t['url']}\n  {e}", file=sys.stderr)
+                emit("failed", i, error=str(e))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     return failures
