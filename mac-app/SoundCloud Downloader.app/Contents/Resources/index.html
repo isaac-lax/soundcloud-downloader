@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SoundCloud Downloader</title>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --text:#1d1d1f; --muted:#6e6e73; --accent:#ff5500; --line:#e5e5e5; --ok:#1a7f37; --err:#c0392b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161617; --card:#1f1f21; --text:#f2f2f2; --muted:#9a9aa0; --line:#333; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width:680px; margin:0 auto; padding:40px 16px; }
+  h1 { font-size:26px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  textarea { width:100%; min-height:96px; padding:12px; font:inherit; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); resize:vertical; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin-top:14px; }
+  label { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px; }
+  input[type=number] { width:76px; padding:6px 8px; font:inherit; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+  button { margin-left:auto; padding:10px 22px; font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:8px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .dest { font-size:13px; color:var(--muted); margin-top:12px; word-break:break-all; }
+  .dest b { color:var(--ok); font-weight:600; }
+  pre { margin:0; max-height:280px; overflow:auto; font:13px/1.5 ui-monospace, Menlo, monospace; white-space:pre-wrap; word-break:break-all; color:var(--muted); }
+  ul { margin:0; padding-left:20px; }
+  li { color:var(--ok); }
+  .err { color:var(--err); font-size:14px; margin-top:10px; }
+  h2 { font-size:15px; margin:0 0 10px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .note { font-size:12px; color:var(--muted); text-align:center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SoundCloud Downloader</h1>
+  <p class="sub">Paste links, click Download. Tracks are loudness-normalized and added to Apple Music.</p>
+
+  <div class="card">
+    <textarea id="urls" placeholder="https://soundcloud.com/artist/track&#10;https://soundcloud.com/artist/sets/playlist&#10;(one per line)"></textarea>
+    <div class="row">
+      <label><input type="checkbox" id="trim" checked> Trim silence at start/end</label>
+      <label><input type="checkbox" id="normalize" checked> Normalize to <input type="number" id="lufs" value="-14.5" step="0.5"> LUFS</label>
+      <button id="go">Download</button>
+    </div>
+    <div class="dest" id="dest"></div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="card" id="donecard" hidden>
+    <h2>Added</h2>
+    <ul id="done"></ul>
+  </div>
+
+  <div class="card">
+    <h2>Progress</h2>
+    <pre id="log">Idle.</pre>
+  </div>
+  <p class="note">Only download audio you have the right to keep. <span id="ver"></span></p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+async function refresh() {
+  const s = await (await fetch('/status')).json();
+  $('go').disabled = s.running;
+  $('go').textContent = s.running ? 'Working…' : 'Download';
+  $('log').textContent = s.log.length ? s.log.join('\n') : 'Idle.';
+  $('log').scrollTop = $('log').scrollHeight;
+  $('donecard').hidden = !s.done.length;
+  $('done').innerHTML = s.done.map(n => `<li>${n.replace(/</g,'&lt;')}</li>`).join('');
+  $('ver').textContent = 'v' + s.version + (s.certifi ? '' : ' (no certifi)');
+  $('dest').innerHTML = s.apple_music
+    ? '<b>Saving into Apple Music</b> (Automatically Add to Music folder)'
+    : 'Saving to ' + s.outdir;
+}
+$('go').onclick = async () => {
+  $('err').textContent = '';
+  const r = await fetch('/download', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ urls: $('urls').value, lufs: $('lufs').value, normalize: $('normalize').checked, trim: $('trim').checked }) });
+  const j = await r.json();
+  if (!r.ok) $('err').textContent = j.error; else $('urls').value = '';
+  refresh();
+};
+refresh(); setInterval(refresh, 1000);
+</script>
+</body>
+</html>

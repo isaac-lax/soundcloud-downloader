@@ -1,0 +1,30 @@
+#!/bin/bash
+# Bootstrap: download the latest version of the app from GitHub, then hand off to launch.sh.
+# Everything that can change lives in the repo; this file only fetches it.
+set -u
+REPO="isaac-lax/soundcloud-downloader"         # owner/name, filled in when the repo is created
+BRANCH="main"
+RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+HOME_DIR="$HOME/Library/Application Support/SoundCloud Downloader"
+APP_DIR="$HOME_DIR/app"
+LOG="$HOME_DIR/app.log"
+mkdir -p "$HOME_DIR"
+exec >>"$LOG" 2>&1
+echo "=== $(date) bootstrap"
+
+TMP="$(mktemp -d)"
+if curl -fsSL --max-time 20 "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" -o "$TMP/app.tgz" \
+   && mkdir -p "$TMP/x" && tar -xzf "$TMP/app.tgz" -C "$TMP/x" --strip-components=1 \
+   && [ -f "$TMP/x/launch.sh" ]; then
+  rm -rf "$APP_DIR.new"; mv "$TMP/x" "$APP_DIR.new"
+  rm -rf "$APP_DIR"; mv "$APP_DIR.new" "$APP_DIR"
+  echo "updated to version $(cat "$APP_DIR/VERSION" 2>/dev/null)"
+else
+  echo "update download failed (offline?)"
+  if [ ! -f "$APP_DIR/launch.sh" ]; then
+    echo "using the copy bundled in the app"
+    rm -rf "$APP_DIR"; mkdir -p "$APP_DIR"; cp -R "$RES/." "$APP_DIR/"
+  fi
+fi
+rm -rf "$TMP"
+exec bash "$APP_DIR/launch.sh"
