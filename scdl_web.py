@@ -10,8 +10,11 @@ Only download audio you have the right to keep.
 """
 import json
 import os
+import subprocess
 import sys
 import threading
+import time
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +24,9 @@ import scdl  # noqa: E402
 
 PORT = 8765
 VERSION = os.environ.get("SCDL_VERSION", "dev")
+REPO = os.environ.get("SCDL_REPO", "isaac-lax/soundcloud-downloader")
+LATEST_URL = f"https://raw.githubusercontent.com/{REPO}/main/VERSION"
+HERE = Path(__file__).resolve().parent
 
 
 class Job:
@@ -31,6 +37,41 @@ class Job:
         self.done: list[str] = []
         self.failed = 0
         self.outdir = scdl.default_outdir()
+        self.latest = None          # newest version on GitHub, if we could check
+        self.restarting = False
+        threading.Thread(target=self._check_latest_loop, daemon=True).start()
+
+    def _check_latest_loop(self):
+        while True:
+            try:
+                with urllib.request.urlopen(LATEST_URL, timeout=8) as r:
+                    self.latest = r.read().decode().strip() or None
+            except Exception:  # noqa: BLE001  offline or blocked: just don't show it
+                pass
+            time.sleep(600)
+
+    def restart(self):
+        """Relaunch the app (which fetches the latest code) and exit this server."""
+        with self.lock:
+            if self.running:
+                return False
+            self.restarting = True
+
+        def go():
+            time.sleep(0.4)                       # let the HTTP reply go out
+            boot = os.environ.get("SCDL_BOOTSTRAP")
+            if boot and Path(boot).exists():
+                cmd = ["bash", boot]
+            elif sys.platform == "darwin":
+                cmd = ["open", "-a", "SoundCloud Downloader"]
+            else:
+                cmd = ["bash", str(HERE / "launch.sh"), "--no-browser"]
+            subprocess.Popen(cmd, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.3)
+            os._exit(0)
+        threading.Thread(target=go, daemon=True).start()
+        return True
 
     # yt-dlp logger interface
     def debug(self, msg):
@@ -101,7 +142,8 @@ class Job:
             return {"running": self.running, "log": self.log[-200:], "done": self.done,
                     "failed": self.failed, "outdir": str(self.outdir),
                     "apple_music": self.outdir == scdl.APPLE_MUSIC_DROP,
-                    "version": VERSION, "certifi": scdl.CERTIFI}
+                    "version": VERSION, "certifi": scdl.CERTIFI,
+                    "latest": self.latest, "restarting": self.restarting}
 
 
 job = Job()
@@ -129,6 +171,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == "/update":
+            if job.restart():
+                return self._send(200, {"ok": True})
+            return self._send(409, {"error": "Wait for the current download to finish, then try again."})
         if self.path != "/download":
             return self._send(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length", 0))

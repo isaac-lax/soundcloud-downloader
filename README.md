@@ -32,6 +32,9 @@ Macs that have never had Python. Alternatively install Python from python.org fi
 
 1. Open **SoundCloud Downloader**. If it's already running, this just brings the
    page back up. If a newer version was pushed, it restarts with the new one.
+   You can also click **Update & restart** at the bottom of the page at any time:
+   it fetches the latest version, restarts, and reloads the page by itself. The
+   page says when a newer version is available.
 2. Paste one or more SoundCloud links (tracks, sets, or profiles), one per line.
 3. Click **Download**. Progress shows on the page, finished tracks are listed
    under "Added", and Apple Music imports them within a few seconds.

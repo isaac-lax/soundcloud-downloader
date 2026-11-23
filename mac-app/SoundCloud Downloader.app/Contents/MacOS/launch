@@ -27,4 +27,5 @@ else
   fi
 fi
 rm -rf "$TMP"
+export SCDL_BOOTSTRAP="$0"
 exec bash "$APP_DIR/launch.sh"
